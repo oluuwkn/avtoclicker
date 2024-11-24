@@ -1,0 +1,183 @@
+#include <windows.h>
+
+//глобальные переменные
+HWND hwndIntervalDropdown, hwndClickTypeDropdown, hwndRepeatCheckbox, hwndClickCountDropdown;//hwndIntervalDropdown - выпадающее окно, в котором в последствие будут значения для клика в миллисекундах.  hwndClickTypeDropdown - выбор между парвой и левой кнопкой мыши, hwndRepeatCheckbox - повторять клики до выключениия
+bool isRunning = false; //проверка, запущен ли автокликер
+bool isRepeating = false; //кликер будет работать бесконечно до выключения или остановится после заданного кол-ва кликов 
+bool isLeftClick = true; //по умолчанию используется левая кнопка мыши
+int clickInterval = 10; //по умолчанию интервал между кликами 10 мс
+int clickCount = 1; //по умолчанию количество кликов 1
+HANDLE clickThread = NULL; //дескриптор потока кликов
+
+//функция для обработки кликов
+void PerformClicks() { //функция, которая выполняет клики. Создает событие Click, имитирующее щелчок мышью 
+    int count = isRepeating ? -1 : clickCount; //повторять бесконечно, в инном случае заданное количество кликов
+
+    while (isRunning && (count != 0)) { //пока флаг isRunning работает, клики выполняются
+        if (!isRepeating && count > 0) {
+            count--;
+        }
+
+        mouse_event(isLeftClick ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0); //функция mouse_event синтезирует движения мыши и нажатия кнопок. MOUSEEVENTF_LEFTDOWN - левая кнопка мыши нажимается, RIGHTDOWN - правая
+        mouse_event(isLeftClick ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0); //MOUSEEVENTF_LEFTUP - левая кнопка опущена, RIGHTUP - правая опущена.
+
+        Sleep(clickInterval); //задержка между кликами в миллисекундах
+    }
+}
+
+//поток для выполнения кликов, для оптимизации работы. этот поток запуескается, когда нажимается кнопка старт 
+DWORD WINAPI ClickThread(LPVOID) {
+    PerformClicks(); //запуск выполнения кликов
+    return 0;
+}
+
+//обработчик сообщений
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) { //windowProc - функция обратного вызова, определяемая в приложении, которая обрабатывает сообщения, отправляемые в окно
+    switch (uMsg) {
+    case WM_CREATE: {
+        //создание выпадающего списка для интервала
+        hwndIntervalDropdown = CreateWindow(L"COMBOBOX", NULL,
+            CBS_DROPDOWNLIST | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+            10, 30, 100, 100, hwnd, NULL, NULL, NULL);
+
+        //добавление интервалов в миллисекундах (10, 20, ..., 100 мс)
+        for (int i = 10; i <= 100; i += 10) {
+            wchar_t buffer[16];
+            wsprintf(buffer, L"%d ms", i);
+            SendMessage(hwndIntervalDropdown, CB_ADDSTRING, 0, (LPARAM)buffer);
+        }
+        SendMessage(hwndIntervalDropdown, CB_SETCURSEL, 0, 0);
+
+        //создание выпадающего списка для кнопки мыши
+        hwndClickTypeDropdown = CreateWindow(L"COMBOBOX", NULL,
+            CBS_DROPDOWNLIST | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+            120, 30, 100, 100, hwnd, NULL, NULL, NULL);
+
+        SendMessage(hwndClickTypeDropdown, CB_ADDSTRING, 0, (LPARAM)L"Левая кнопка");
+        SendMessage(hwndClickTypeDropdown, CB_ADDSTRING, 0, (LPARAM)L"Правая кнопка");
+        SendMessage(hwndClickTypeDropdown, CB_SETCURSEL, 0, 0);
+
+        //создание чекбокса для повторения
+        hwndRepeatCheckbox = CreateWindow(L"BUTTON", L"Повторять, пока не выключат",
+            BS_AUTOCHECKBOX | WS_CHILD | WS_VISIBLE,
+            230, 100, 230, 20, hwnd, NULL, NULL, NULL);
+
+        //создание выпадающего списка для количества кликов
+        hwndClickCountDropdown = CreateWindow(L"COMBOBOX", NULL,
+            CBS_DROPDOWNLIST | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+            230, 150, 100, 100, hwnd, NULL, NULL, NULL);
+
+        for (int i = 1; i <= 100; i++) {
+            wchar_t buffer[16];
+            wsprintf(buffer, L"%d", i);
+            SendMessage(hwndClickCountDropdown, CB_ADDSTRING, 0, (LPARAM)buffer);
+        }
+        SendMessage(hwndClickCountDropdown, CB_SETCURSEL, 0, 0);
+
+        //кнопка "старт"
+        CreateWindow(L"BUTTON", L"cтарт (F6)",
+            WS_CHILD | WS_VISIBLE,
+            10, 230, 100, 30, hwnd, (HMENU)1, NULL, NULL);
+
+        //кнопка "стоп"
+        CreateWindow(L"BUTTON", L"cтоп (F6)",
+            WS_CHILD | WS_VISIBLE,
+            120, 230, 100, 30, hwnd, (HMENU)2, NULL, NULL);
+
+        break;
+    }
+
+    case WM_COMMAND: {
+        if (LOWORD(wParam) == 1) { //старт
+            if (!isRunning) {
+                isRunning = true;
+
+                //получение интервала (выбор из выпадающего списка)
+                int selectedIndex = SendMessage(hwndIntervalDropdown, CB_GETCURSEL, 0, 0);
+                //интервал в миллисекундах - вычисляем его напрямую
+                clickInterval = (selectedIndex + 1) * 10; //это значение будет в диапазоне 10 ms - 100 ms
+
+                //получение типа клика
+                int clickTypeIndex = SendMessage(hwndClickTypeDropdown, CB_GETCURSEL, 0, 0);
+                isLeftClick = (clickTypeIndex == 0);
+
+                //проверка чекбокса
+                isRepeating = (SendMessage(hwndRepeatCheckbox, BM_GETCHECK, 0, 0) == BST_CHECKED);
+
+                //получение количества кликов, если не выбран "повторять"
+                if (!isRepeating) {
+                    int clickCountIndex = SendMessage(hwndClickCountDropdown, CB_GETCURSEL, 0, 0);
+                    clickCount = clickCountIndex + 1; //число кликов от 1 до 100
+                }
+
+                //запуск потока
+                CreateThread(NULL, 0, ClickThread, NULL, 0, NULL);
+            }
+        }
+        else if (LOWORD(wParam) == 2) { //стоп
+            isRunning = false;
+        }
+
+        //проверка состояния чекбокса "gовторять" и блокировка/разблокировка выбора количества кликов
+        if ((HWND)lParam == hwndRepeatCheckbox) {
+            if (SendMessage(hwndRepeatCheckbox, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                //если флажок установлен - блокируется выпадающий список для кликов
+                EnableWindow(hwndClickCountDropdown, FALSE);
+            }
+            else {
+                //если флажок не установлен - разблокируется выпадающий список для кликов
+                EnableWindow(hwndClickCountDropdown, TRUE);
+            }
+        }
+        break;
+    }
+
+    case WM_HOTKEY: { //обработка горячих клавиш
+        if (wParam == 1) {
+            SendMessage(hwnd, WM_COMMAND, isRunning ? 2 : 1, 0);
+        }
+        break;
+    }
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        break;
+
+    default:
+        return DefWindowProc(hwnd, uMsg, wParam, lParam);
+    }
+    return 0;
+}
+
+
+
+//точка входа для windows-приложения
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) { //hInstance — это дескриптор экземпляра или дескриптор модуля, hPrevInstance не имеет смысла. Он использовался в 16-разрядной версии Windows, но теперь всегда равен нулю. LPSTR lpCmdLine Командная строка для приложения, за исключением имени программы. int nCmdShow это флаг, указывающий, является ли основное окно приложения свернуто, развернуто или отображается в обычном режиме.
+    const wchar_t CLASS_NAME[] = L"AutoClickerWindow";
+
+    WNDCLASS wc = {};
+    wc.lpfnWndProc = WindowProc;
+    wc.hInstance = hInstance;
+    wc.lpszClassName = CLASS_NAME;  
+
+    RegisterClass(&wc);
+
+    HWND hwnd = CreateWindowEx(0, CLASS_NAME, L"Автокликер",
+        WS_OVERLAPPEDWINDOW, 600, 300, 500, 400, NULL, NULL, hInstance, NULL);
+
+    if (hwnd == NULL) {
+        return 0; //проверка на ошибку при создании окна
+    }
+    RegisterHotKey(hwnd, 1, 0, VK_F6); //регистрация F6
+
+    ShowWindow(hwnd, nCmdShow); //отображение окна на экране
+
+    MSG msg = {};
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    UnregisterHotKey(hwnd, 1); //удаление горячей клавиши
+    return 0;
+}
